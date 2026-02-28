@@ -41,7 +41,13 @@ to_wsl_path() {
     echo "$p" | sed -E 's|^/([a-zA-Z])/|/mnt/\L\1/|'
 }
 
-WSL_HOME="/home/yth1133"
+# ── 설정 (환경에 맞게 수정) ────────────────────────────────
+# WSL 사용자 홈 디렉토리 (Windows에서 WSL 배포 시 사용)
+WSL_HOME="/home/$(MSYS_NO_PATHCONV=1 wsl whoami 2>/dev/null || echo '$USER')"
+# 익스텐션 publisher.name
+EXT_PUBLISHER="yth1133"
+EXT_NAME="claude-bridge"
+EXT_VERSION="0.1.0"
 
 # ── Windows (Git Bash) 배포 ───────────────────────────────
 deploy_windows() {
@@ -59,8 +65,8 @@ deploy_windows() {
               "$win_home/.gemini/GEMINI.md" \
               "GEMINI.md (Windows)"
 
-    # extension → ~/.antigravity/extensions/yth1133.claude-bridge-0.1.0-universal/
-    local ext_dst="$win_home/.antigravity/extensions/yth1133.claude-bridge-0.1.0-universal"
+    # extension → ~/.antigravity/extensions/${EXT_PUBLISHER}.${EXT_NAME}-${EXT_VERSION}-universal/
+    local ext_dst="$win_home/.antigravity/extensions/${EXT_PUBLISHER}.${EXT_NAME}-${EXT_VERSION}-universal"
     copy_file "$SCRIPT_DIR/extension/extension.js" "$ext_dst/extension.js" "extension.js (Windows)"
     copy_file "$SCRIPT_DIR/extension/package.json"  "$ext_dst/package.json"  "package.json (Windows)"
     copy_file "$SCRIPT_DIR/extension/.vsixmanifest"  "$ext_dst/.vsixmanifest"  ".vsixmanifest (Windows)"
@@ -95,8 +101,8 @@ deploy_windows() {
     echo "  [OK] GEMINI.md (WSL)"
     echo "       $WSL_HOME/.gemini/GEMINI.md"
 
-    # extension → WSL ~/.antigravity-server/extensions/yth1133.claude-bridge-0.1.0/
-    local wsl_ext="$WSL_HOME/.antigravity-server/extensions/yth1133.claude-bridge-0.1.0"
+    # extension → WSL ~/.antigravity-server/extensions/${EXT_PUBLISHER}.${EXT_NAME}-${EXT_VERSION}/
+    local wsl_ext="$WSL_HOME/.antigravity-server/extensions/${EXT_PUBLISHER}.${EXT_NAME}-${EXT_VERSION}"
     MSYS_NO_PATHCONV=1 wsl mkdir -p "$wsl_ext"
     for f in extension.js package.json .vsixmanifest; do
         MSYS_NO_PATHCONV=1 wsl cp "$wsl_src/extension/$f" "$wsl_ext/$f"
@@ -126,7 +132,7 @@ deploy_wsl() {
     copy_file "$SCRIPT_DIR/src/GEMINI.md" "$HOME/.gemini/GEMINI.md" "GEMINI.md"
 
     # extension
-    local ext="$HOME/.antigravity-server/extensions/yth1133.claude-bridge-0.1.0"
+    local ext="$HOME/.antigravity-server/extensions/${EXT_PUBLISHER}.${EXT_NAME}-${EXT_VERSION}"
     mkdir -p "$ext"
     for f in extension.js package.json .vsixmanifest; do
         copy_file "$SCRIPT_DIR/extension/$f" "$ext/$f" "$f"

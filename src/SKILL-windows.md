@@ -33,7 +33,7 @@ Windows 경로를 WSL에 전달할 때 반드시 변환해야 한다:
 | Windows 경로 | WSL 경로 |
 |-------------|---------|
 | `D:\project_2026\bridge-windows` | `/mnt/d/project_2026/bridge-windows` |
-| `C:\Users\ms211\project` | `/mnt/c/Users/ms211/project` |
+| `C:\Users\<username>\project` | `/mnt/c/Users/<username>/project` |
 
 **변환 규칙**: `드라이브:\경로` → `/mnt/드라이브(소문자)/경로(백슬래시→슬래시)`
 
@@ -91,7 +91,7 @@ bridge.py는 메시지가 **500자 초과**이면 자동으로:
 
 ### init 후속 절차 (Claude가 수행)
 
-1. `MSYS_NO_PATHCONV=1 wsl -e python3 /home/yth1133/.claude/skills/gemini-bridge/bridge.py --dir <wsl-path> init` 실행
+1. `MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/gemini-bridge/bridge.py --dir <wsl-path> init'` 실행
 2. 프로젝트의 CLAUDE.md 읽기
 3. (있으면) package.json, pyproject.toml 등 읽기
 4. 파악한 정보로 `bridge/gemini-context.md` 내용 채우기 (Write tool)
@@ -113,13 +113,13 @@ WSL_DIR="/mnt/d/project_2026/my-app"
 ### BRIDGE 명령어 템플릿
 
 ```
-BRIDGE="MSYS_NO_PATHCONV=1 wsl -e python3 /home/yth1133/.claude/skills/gemini-bridge/bridge.py"
+BRIDGE="MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/gemini-bridge/bridge.py'"
 ```
 
 ### 초기화 (init) — 새 프로젝트에서 최초 1회
 
 ```bash
-MSYS_NO_PATHCONV=1 wsl -e python3 /home/yth1133/.claude/skills/gemini-bridge/bridge.py --dir "<WSL경로>" init
+MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/gemini-bridge/bridge.py --dir "<WSL경로>" init'
 ```
 
 ### 전송 (send) — 기본 동작
@@ -127,13 +127,13 @@ MSYS_NO_PATHCONV=1 wsl -e python3 /home/yth1133/.claude/skills/gemini-bridge/bri
 인자가 `init/read/list/search/ask`가 아닐 때:
 
 ```bash
-MSYS_NO_PATHCONV=1 wsl -e python3 /home/yth1133/.claude/skills/gemini-bridge/bridge.py --dir "<WSL경로>" send "<메시지>" --topic "<토픽>"
+MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/gemini-bridge/bridge.py --dir "<WSL경로>" send "<메시지>" --topic "<토픽>"'
 ```
 
 ### 전송 + 대기 (ask)
 
 ```bash
-MSYS_NO_PATHCONV=1 wsl -e python3 /home/yth1133/.claude/skills/gemini-bridge/bridge.py --dir "<WSL경로>" ask "<메시지>" --topic "<토픽>" --timeout 180 --retries 3
+MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/gemini-bridge/bridge.py --dir "<WSL경로>" ask "<메시지>" --topic "<토픽>" --timeout 180 --retries 3'
 ```
 
 - `--timeout`: 응답 대기 시간 (초, 기본 180)
@@ -146,19 +146,19 @@ Gemini 응답을 기다려야 하는 경우 `send` 대신 `ask`를 사용한다.
 ### 읽기 (read)
 
 ```bash
-MSYS_NO_PATHCONV=1 wsl -e python3 /home/yth1133/.claude/skills/gemini-bridge/bridge.py --dir "<WSL경로>" --source gemini latest
+MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/gemini-bridge/bridge.py --dir "<WSL경로>" --source gemini latest'
 ```
 
 ### 목록 (list)
 
 ```bash
-MSYS_NO_PATHCONV=1 wsl -e python3 /home/yth1133/.claude/skills/gemini-bridge/bridge.py --dir "<WSL경로>" --source gemini list
+MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/gemini-bridge/bridge.py --dir "<WSL경로>" --source gemini list'
 ```
 
 ### 검색 (search)
 
 ```bash
-MSYS_NO_PATHCONV=1 wsl -e python3 /home/yth1133/.claude/skills/gemini-bridge/bridge.py --dir "<WSL경로>" --source gemini search "<키워드>"
+MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/gemini-bridge/bridge.py --dir "<WSL경로>" --source gemini search "<키워드>"'
 ```
 
 ## 새 프로젝트에서 Gemini 사용하기
