@@ -133,8 +133,15 @@ MSYS_NO_PATHCONV=1 wsl -e python3 /home/yth1133/.claude/skills/gemini-bridge/bri
 ### 전송 + 대기 (ask)
 
 ```bash
-MSYS_NO_PATHCONV=1 wsl -e python3 /home/yth1133/.claude/skills/gemini-bridge/bridge.py --dir "<WSL경로>" ask "<메시지>" --topic "<토픽>" --timeout <초>
+MSYS_NO_PATHCONV=1 wsl -e python3 /home/yth1133/.claude/skills/gemini-bridge/bridge.py --dir "<WSL경로>" ask "<메시지>" --topic "<토픽>" --timeout 180 --retries 3
 ```
+
+- `--timeout`: 응답 대기 시간 (초, 기본 180)
+- `--retries`: 타임아웃 시 "continue" 자동 재시도 횟수 (기본 3)
+
+**자동 재시도 동작**: 타임아웃 내에 `bridge/from-gemini/`에 새 `.md` 파일이 안 나타나면, 자동으로 "continue" trigger를 전송하고 다시 대기한다. Gemini가 에러로 멈췄을 때 수동 개입 없이 복구된다.
+
+Gemini 응답을 기다려야 하는 경우 `send` 대신 `ask`를 사용한다. `send`는 fire-and-forget이고, `ask`는 응답이 올 때까지 대기 + 자동 재시도한다.
 
 ### 읽기 (read)
 
