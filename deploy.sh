@@ -34,6 +34,13 @@ copy_file() {
     echo "       $dst"
 }
 
+# Git Bash MSYS 경로 (/d/foo) → WSL 경로 (/mnt/d/foo) 변환
+to_wsl_path() {
+    local p="$1"
+    # /d/project → /mnt/d/project
+    echo "$p" | sed -E 's|^/([a-zA-Z])/|/mnt/\L\1/|'
+}
+
 WSL_HOME="/home/yth1133"
 
 # ── Windows (Git Bash) 배포 ───────────────────────────────
@@ -61,26 +68,30 @@ deploy_windows() {
     echo ""
     echo "── WSL 배포 (via wsl) ──"
 
+    # MSYS 경로를 WSL 경로로 변환
+    local wsl_src
+    wsl_src="$(to_wsl_path "$SCRIPT_DIR")"
+
     # bridge.py → WSL ~/.claude/skills/gemini-bridge/bridge.py
     local wsl_skill="$WSL_HOME/.claude/skills/gemini-bridge"
     MSYS_NO_PATHCONV=1 wsl mkdir -p "$wsl_skill"
-    MSYS_NO_PATHCONV=1 wsl cp "$(wslpath -u "$SCRIPT_DIR/src/bridge.py")" "$wsl_skill/bridge.py"
+    MSYS_NO_PATHCONV=1 wsl cp "$wsl_src/src/bridge.py" "$wsl_skill/bridge.py"
     echo "  [OK] bridge.py (WSL)"
     echo "       $wsl_skill/bridge.py"
 
     # SKILL-wsl.md → WSL ~/.claude/skills/gemini-bridge/SKILL.md
-    MSYS_NO_PATHCONV=1 wsl cp "$(wslpath -u "$SCRIPT_DIR/src/SKILL-wsl.md")" "$wsl_skill/SKILL.md"
+    MSYS_NO_PATHCONV=1 wsl cp "$wsl_src/src/SKILL-wsl.md" "$wsl_skill/SKILL.md"
     echo "  [OK] SKILL.md (WSL)"
     echo "       $wsl_skill/SKILL.md"
 
     # IMPROVEMENTS.md → WSL ~/.claude/skills/gemini-bridge/IMPROVEMENTS.md
-    MSYS_NO_PATHCONV=1 wsl cp "$(wslpath -u "$SCRIPT_DIR/src/IMPROVEMENTS.md")" "$wsl_skill/IMPROVEMENTS.md"
+    MSYS_NO_PATHCONV=1 wsl cp "$wsl_src/src/IMPROVEMENTS.md" "$wsl_skill/IMPROVEMENTS.md"
     echo "  [OK] IMPROVEMENTS.md (WSL)"
     echo "       $wsl_skill/IMPROVEMENTS.md"
 
     # GEMINI.md → WSL ~/.gemini/GEMINI.md
     MSYS_NO_PATHCONV=1 wsl mkdir -p "$WSL_HOME/.gemini"
-    MSYS_NO_PATHCONV=1 wsl cp "$(wslpath -u "$SCRIPT_DIR/src/GEMINI.md")" "$WSL_HOME/.gemini/GEMINI.md"
+    MSYS_NO_PATHCONV=1 wsl cp "$wsl_src/src/GEMINI.md" "$WSL_HOME/.gemini/GEMINI.md"
     echo "  [OK] GEMINI.md (WSL)"
     echo "       $WSL_HOME/.gemini/GEMINI.md"
 
@@ -88,7 +99,7 @@ deploy_windows() {
     local wsl_ext="$WSL_HOME/.antigravity-server/extensions/yth1133.claude-bridge-0.1.0"
     MSYS_NO_PATHCONV=1 wsl mkdir -p "$wsl_ext"
     for f in extension.js package.json .vsixmanifest; do
-        MSYS_NO_PATHCONV=1 wsl cp "$(wslpath -u "$SCRIPT_DIR/extension/$f")" "$wsl_ext/$f"
+        MSYS_NO_PATHCONV=1 wsl cp "$wsl_src/extension/$f" "$wsl_ext/$f"
         echo "  [OK] $f (WSL)"
         echo "       $wsl_ext/$f"
     done
