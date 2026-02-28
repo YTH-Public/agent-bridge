@@ -295,6 +295,31 @@ source: claude
     print(f"   메시지: {trigger_message[:200]}{'...' if len(trigger_message) > 200 else ''}")
 
 
+def _send_continue(args):
+    """'continue' 메시지를 trigger로 전송한다."""
+    bridge = resolve_bridge_dir(args.dir)
+    sources = get_sources(bridge)
+    from_claude = sources["claude"]
+    from_claude.mkdir(parents=True, exist_ok=True)
+
+    now = datetime.datetime.now()
+    timestamp = now.strftime("%Y-%m-%dT%H:%M:%S")
+    file_ts = now.strftime("%Y-%m-%d_%H-%M")
+
+    filename = f"{file_ts}_continue.trigger"
+    trigger_path = from_claude / filename
+    content = f"""---
+timestamp: "{timestamp}"
+topic: "continue"
+source: claude
+---
+
+continue
+"""
+    trigger_path.write_text(content, encoding="utf-8")
+    print(f"🔄 Continue trigger 전송: {trigger_path.relative_to(bridge)}")
+
+
 def cmd_ask(args):
     bridge = resolve_bridge_dir(args.dir)
     sources = get_sources(bridge)
@@ -303,19 +328,25 @@ def cmd_ask(args):
 
     cmd_send(args)
 
-    print(f"\n⏳ Gemini 응답 대기 중 (최대 {args.timeout}초)...")
-    deadline = time.time() + args.timeout
-    while time.time() < deadline:
-        time.sleep(3)
-        current_files = set(from_gemini.glob("*.md")) if from_gemini.exists() else set()
-        new_files = current_files - before_files
-        if new_files:
-            newest = max(new_files, key=lambda f: f.stat().st_mtime)
-            print(f"\n📨 응답 도착: {newest.relative_to(bridge)}\n")
-            print(newest.read_text(encoding="utf-8"))
-            return
+    max_retries = args.retries
+    for attempt in range(max_retries + 1):
+        if attempt > 0:
+            print(f"\n🔄 응답 없음 → continue 전송 ({attempt}/{max_retries})")
+            _send_continue(args)
 
-    print("\n⏰ 타임아웃. Gemini 응답이 아직 없습니다.")
+        print(f"\n⏳ Gemini 응답 대기 중 (최대 {args.timeout}초)...")
+        deadline = time.time() + args.timeout
+        while time.time() < deadline:
+            time.sleep(3)
+            current_files = set(from_gemini.glob("*.md")) if from_gemini.exists() else set()
+            new_files = current_files - before_files
+            if new_files:
+                newest = max(new_files, key=lambda f: f.stat().st_mtime)
+                print(f"\n📨 응답 도착: {newest.relative_to(bridge)}\n")
+                print(newest.read_text(encoding="utf-8"))
+                return
+
+    print(f"\n⏰ {max_retries}회 재시도 후에도 응답 없음.")
     print("   나중에 `latest --source gemini` 로 확인하세요.")
 
 
@@ -351,7 +382,8 @@ def main():
     p_ask = sub.add_parser("ask", help="Gemini에게 전송 + 응답 대기")
     p_ask.add_argument("message", help="전송할 메시지")
     p_ask.add_argument("--topic", default="message", help="메시지 토픽")
-    p_ask.add_argument("--timeout", type=int, default=120, help="대기 시간 초")
+    p_ask.add_argument("--timeout", type=int, default=180, help="대기 시간 초 (기본: 180)")
+    p_ask.add_argument("--retries", type=int, default=3, help="continue 재시도 횟수 (기본: 3)")
 
     args = parser.parse_args()
 
