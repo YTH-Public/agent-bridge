@@ -54,6 +54,40 @@ AI 코딩 에이전트 하나로는 부족할 때가 있습니다. Claude는 코
 4. Claude에게 피드백 반영 지시
 ```
 
+## 실제 사용 예시
+
+투두 앱을 만들면서 Claude, Gemini, Codex 세 AI가 협업하는 과정입니다.
+
+### 1. Claude에게 자연어로 지시
+
+한 문장으로 Gemini와 Codex에게 동시에 작업을 맡깁니다.
+
+![Claude에게 자연어로 지시](examples/01-claude-command.png)
+
+### 2. Gemini가 디자인 작업 수행
+
+Gemini가 트리거를 받아 아이콘 생성 작업을 시작합니다.
+
+![Gemini가 디자인 작업 수행](examples/02-gemini-working.png)
+
+### 3. Codex가 코드 리뷰 + 결과 확인
+
+Codex가 코드 리뷰를 완료하고, Gemini의 응답도 함께 확인합니다.
+
+![Codex가 코드 리뷰 + 결과 확인](examples/03-codex-and-result.png)
+
+### 4. 세 AI가 함께 토의
+
+개선 아이디어를 Gemini와 Codex에게 동시에 요청합니다.
+
+![세 AI가 함께 토의](examples/04-three-way-discussion.png)
+
+### 5. 토의 결과 — 투표로 결정
+
+세 AI의 제안을 표로 정리하고, 투표로 최종 결정합니다.
+
+![토의 결과 — 투표로 결정](examples/05-vote-result.png)
+
 ## 동작 원리
 
 ```
