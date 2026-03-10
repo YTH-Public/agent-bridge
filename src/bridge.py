@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Gemini-Claude Bridge — 전역 CLI.
+"""AI Bridge — Gemini + Codex 전역 CLI.
 
-어떤 프로젝트에서든 bridge/ 디렉토리를 통해 Gemini와 통신한다.
+어떤 프로젝트에서든 bridge/ 디렉토리를 통해 Gemini/Codex와 통신한다.
 순수 Python stdlib만 사용 (외부 의존성 없음).
 
 사용법:
     python3 bridge.py --dir /path/to/project init
     python3 bridge.py --dir /path/to/project send "메시지"
+    python3 bridge.py --dir /path/to/project --target codex send "메시지"
     python3 bridge.py --dir /path/to/project --source gemini latest
-    python3 bridge.py --dir /path/to/project --source gemini list
-    python3 bridge.py --dir /path/to/project --source gemini search "키워드"
-    python3 bridge.py --dir /path/to/project ask "질문" --timeout 120
+    python3 bridge.py --dir /path/to/project --source codex latest
+    python3 bridge.py --dir /path/to/project ask "질문" --timeout 600
+    python3 bridge.py --dir /path/to/project --target codex ask "질문"
 """
 
 import argparse
@@ -104,6 +105,25 @@ GEMINI_CONTEXT_SKELETON = """\
 <!-- 최근 Sprint, 진행 중인 작업 -->
 """
 
+CODEX_CONTEXT_SKELETON = """\
+# Codex Context — {project_name}
+
+> 이 파일은 Claude가 Codex에게 요청할 때 자동으로 포함되는 프로젝트 컨텍스트입니다.
+> `/codex init` 시 자동 생성되며, 프로젝트가 발전하면 Claude가 자동 업데이트합니다.
+
+## 프로젝트 개요
+<!-- Claude가 CLAUDE.md를 읽고 채움 -->
+
+## 기술 스택
+<!-- Claude가 CLAUDE.md / package.json / pyproject.toml 읽고 채움 -->
+
+## Codex 주 역할
+<!-- 이 프로젝트에서 Codex에게 주로 맡길 작업 -->
+
+## 현재 상태
+<!-- 최근 Sprint, 진행 중인 작업 -->
+"""
+
 
 def resolve_bridge_dir(args_dir: Optional[str]) -> Path:
     """프로젝트의 bridge/ 디렉토리를 찾는다."""
@@ -123,6 +143,7 @@ def resolve_bridge_dir(args_dir: Optional[str]) -> Path:
 def get_sources(bridge: Path) -> dict:
     return {
         "gemini": bridge / "from-gemini",
+        "codex": bridge / "from-codex",
         "claude": bridge / "from-claude",
     }
 
@@ -130,7 +151,7 @@ def get_sources(bridge: Path) -> dict:
 def get_md_files(bridge: Path, source: str = "all") -> list:
     sources = get_sources(bridge)
     if source == "all":
-        dirs = [sources["gemini"], sources["claude"]]
+        dirs = [sources["gemini"], sources["codex"], sources["claude"]]
     else:
         dirs = [sources[source]]
 
@@ -150,15 +171,17 @@ def cmd_init(args, bridge_dir_override=None):
 
     bridge = base / "bridge"
     from_gemini = bridge / "from-gemini"
+    from_codex = bridge / "from-codex"
     from_claude = bridge / "from-claude"
     agent_rules = base / ".agent" / "rules"
 
     from_gemini.mkdir(parents=True, exist_ok=True)
+    from_codex.mkdir(parents=True, exist_ok=True)
     from_claude.mkdir(parents=True, exist_ok=True)
     agent_rules.mkdir(parents=True, exist_ok=True)
 
     # .gitkeep
-    for d in [from_gemini, from_claude]:
+    for d in [from_gemini, from_codex, from_claude]:
         gitkeep = d / ".gitkeep"
         if not gitkeep.exists():
             gitkeep.touch()
@@ -169,20 +192,34 @@ def cmd_init(args, bridge_dir_override=None):
     print(f"  {'업데이트' if rule_file.exists() else '생성'}: {rule_file.relative_to(base)}")
 
     # gemini-context.md 스켈레톤 (없을 때만 생성)
-    context_file = bridge / "gemini-context.md"
     project_name = base.name
-    if not context_file.exists():
-        skeleton = GEMINI_CONTEXT_SKELETON.replace("{project_name}", project_name)
-        context_file.write_text(skeleton, encoding="utf-8")
-        print(f"  생성: {context_file.relative_to(base)}")
-        print(f"  ℹ️  Claude가 CLAUDE.md를 읽고 내용을 채웁니다.")
+    gemini_ctx = bridge / "gemini-context.md"
+    if not gemini_ctx.exists():
+        gemini_ctx.write_text(
+            GEMINI_CONTEXT_SKELETON.replace("{project_name}", project_name),
+            encoding="utf-8",
+        )
+        print(f"  생성: {gemini_ctx.relative_to(base)}")
     else:
-        print(f"  이미 존재: {context_file.relative_to(base)}")
+        print(f"  이미 존재: {gemini_ctx.relative_to(base)}")
+
+    # codex-context.md 스켈레톤 (없을 때만 생성)
+    codex_ctx = bridge / "codex-context.md"
+    if not codex_ctx.exists():
+        codex_ctx.write_text(
+            CODEX_CONTEXT_SKELETON.replace("{project_name}", project_name),
+            encoding="utf-8",
+        )
+        print(f"  생성: {codex_ctx.relative_to(base)}")
+    else:
+        print(f"  이미 존재: {codex_ctx.relative_to(base)}")
 
     print(f"✅ Bridge 초기화 완료: {base}")
-    print(f"   bridge/from-gemini/  — Gemini 응답 저장소")
-    print(f"   bridge/from-claude/  — Claude 요청 저장소")
-    print(f"   bridge/gemini-context.md — 프로젝트 컨텍스트 (Gemini용)")
+    print(f"   bridge/from-gemini/       — Gemini 응답 저장소")
+    print(f"   bridge/from-codex/        — Codex 응답 저장소")
+    print(f"   bridge/from-claude/       — Claude 요청 저장소 (.trigger / .codex-trigger)")
+    print(f"   bridge/gemini-context.md  — 프로젝트 컨텍스트 (Gemini용)")
+    print(f"   bridge/codex-context.md   — 프로젝트 컨텍스트 (Codex용)")
     print(f"   .agent/rules/bridge-output.md — Antigravity 규칙")
 
 
@@ -248,6 +285,7 @@ MAX_TRIGGER_LENGTH = 500  # 트리거 메시지 최대 길이 (이 이상이면 
 
 
 def cmd_send(args):
+    target = getattr(args, "target", "gemini")
     bridge = resolve_bridge_dir(args.dir)
     sources = get_sources(bridge)
     from_claude = sources["claude"]
@@ -260,38 +298,50 @@ def cmd_send(args):
     topic = args.topic or "message"
     message = args.message
 
+    # Codex용 응답 파일 경로 생성
+    response_file = ""
+    if target == "codex":
+        response_filename = f"{file_ts}_{topic}.md"
+        response_file = f"bridge/from-codex/{response_filename}"
+
     # 긴 메시지는 별도 .md 파일로 저장하고 트리거에는 경로만 포함
+    response_dir_name = "from-codex" if target == "codex" else "from-gemini"
     if len(message) > MAX_TRIGGER_LENGTH:
         detail_filename = f"{file_ts}_{topic}-detail.md"
         detail_path = from_claude / detail_filename
         detail_path.write_text(
-            f"---\ntimestamp: \"{timestamp}\"\ntopic: \"{topic}\"\nsource: claude\n---\n\n{message}\n",
+            f"---\ntimestamp: \"{timestamp}\"\ntopic: \"{topic}\"\nsource: claude\ntarget: {target}\n---\n\n{message}\n",
             encoding="utf-8",
         )
         rel_detail = f"bridge/from-claude/{detail_filename}"
         trigger_message = (
             f"아래 파일에 상세 요청이 있습니다. 파일을 읽고 그 안의 요청대로 처리해주세요.\n\n"
             f"📄 파일 경로: {rel_detail}\n\n"
-            f"응답은 bridge/from-gemini/ 에 저장해주세요."
+            f"응답은 bridge/{response_dir_name}/ 에 저장해주세요."
         )
         print(f"📄 긴 메시지 → 파일 분리: {rel_detail} ({len(message)}자)")
     else:
         trigger_message = message
 
-    filename = f"{file_ts}_{topic}.trigger"
+    # 트리거 확장자: .trigger (Gemini) / .codex-trigger (Codex)
+    ext = ".codex-trigger" if target == "codex" else ".trigger"
+    filename = f"{file_ts}_{topic}{ext}"
     trigger_path = from_claude / filename
 
     content = f"""---
 timestamp: "{timestamp}"
 topic: "{topic}"
 source: claude
+target: {target}
+response_file: "{response_file}"
 ---
 
 {trigger_message}
 """
 
     trigger_path.write_text(content, encoding="utf-8")
-    print(f"✅ Trigger 생성: {trigger_path.relative_to(bridge)}")
+    label = "Codex" if target == "codex" else "Gemini"
+    print(f"✅ {label} Trigger 생성: {trigger_path.relative_to(bridge)}")
     print(f"   메시지: {trigger_message[:200]}{'...' if len(trigger_message) > 200 else ''}")
 
 
@@ -321,37 +371,42 @@ continue
 
 
 def cmd_ask(args):
+    target = getattr(args, "target", "gemini")
     bridge = resolve_bridge_dir(args.dir)
     sources = get_sources(bridge)
-    from_gemini = sources["gemini"]
-    before_files = set(from_gemini.glob("*.md")) if from_gemini.exists() else set()
+    response_dir = sources[target]
+    before_files = set(response_dir.glob("*.md")) if response_dir.exists() else set()
 
     cmd_send(args)
 
+    label = "Codex" if target == "codex" else "Gemini"
     max_retries = args.retries
     for attempt in range(max_retries + 1):
         if attempt > 0:
-            print(f"\n🔄 응답 없음 → continue 전송 ({attempt}/{max_retries})")
-            _send_continue(args)
+            if target == "gemini":
+                print(f"\n🔄 응답 없음 → continue 전송 ({attempt}/{max_retries})")
+                _send_continue(args)
+            else:
+                print(f"\n⏳ {label} 아직 작업 중... ({attempt}/{max_retries})")
 
-        print(f"\n⏳ Gemini 응답 대기 중 (최대 {args.timeout}초)...")
+        print(f"\n⏳ {label} 응답 대기 중 (최대 {args.timeout}초)...")
         deadline = time.time() + args.timeout
         while time.time() < deadline:
             time.sleep(3)
-            current_files = set(from_gemini.glob("*.md")) if from_gemini.exists() else set()
+            current_files = set(response_dir.glob("*.md")) if response_dir.exists() else set()
             new_files = current_files - before_files
             if new_files:
                 newest = max(new_files, key=lambda f: f.stat().st_mtime)
-                print(f"\n📨 응답 도착: {newest.relative_to(bridge)}\n")
+                print(f"\n📨 {label} 응답 도착: {newest.relative_to(bridge)}\n")
                 print(newest.read_text(encoding="utf-8"))
                 return
 
     print(f"\n⏰ {max_retries}회 재시도 후에도 응답 없음.")
-    print("   나중에 `latest --source gemini` 로 확인하세요.")
+    print(f"   나중에 `latest --source {target}` 로 확인하세요.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Gemini-Claude Bridge")
+    parser = argparse.ArgumentParser(description="AI Bridge — Gemini + Codex")
     parser.add_argument(
         "--dir",
         default=None,
@@ -359,9 +414,15 @@ def main():
     )
     parser.add_argument(
         "--source",
-        choices=["gemini", "claude", "all"],
+        choices=["gemini", "codex", "claude", "all"],
         default="all",
         help="검색 소스 (기본: all)",
+    )
+    parser.add_argument(
+        "--target",
+        choices=["gemini", "codex"],
+        default="gemini",
+        help="전송 대상 (기본: gemini)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -375,15 +436,15 @@ def main():
     p_search = sub.add_parser("search", help="키워드 검색")
     p_search.add_argument("keyword", help="검색할 키워드")
 
-    p_send = sub.add_parser("send", help="Gemini에게 메시지 전송")
+    p_send = sub.add_parser("send", help="메시지 전송")
     p_send.add_argument("message", help="전송할 메시지")
     p_send.add_argument("--topic", default="message", help="메시지 토픽")
 
-    p_ask = sub.add_parser("ask", help="Gemini에게 전송 + 응답 대기")
+    p_ask = sub.add_parser("ask", help="전송 + 응답 대기")
     p_ask.add_argument("message", help="전송할 메시지")
     p_ask.add_argument("--topic", default="message", help="메시지 토픽")
-    p_ask.add_argument("--timeout", type=int, default=180, help="대기 시간 초 (기본: 180)")
-    p_ask.add_argument("--retries", type=int, default=3, help="continue 재시도 횟수 (기본: 3)")
+    p_ask.add_argument("--timeout", type=int, default=600, help="대기 시간 초 (기본: 600)")
+    p_ask.add_argument("--retries", type=int, default=3, help="재시도 횟수 (기본: 3)")
 
     args = parser.parse_args()
 

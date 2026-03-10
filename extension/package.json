@@ -1,8 +1,8 @@
 {
 	"name": "claude-bridge",
 	"displayName": "Claude Bridge",
-	"description": "Claude Code에서 Antigravity Gemini Agent로 메시지를 전달하는 브릿지",
-	"version": "0.1.0",
+	"description": "Claude Code에서 Antigravity의 Gemini/Codex Agent로 메시지를 전달하는 브릿지",
+	"version": "0.2.0",
 	"publisher": "yth1133",
 	"engines": {
 		"vscode": "^1.90.0"
@@ -15,7 +15,7 @@
 		"commands": [
 			{
 				"command": "claudeBridge.sendMessage",
-				"title": "Claude Bridge: Send Message to Gemini"
+				"title": "Claude Bridge: Send Message"
 			},
 			{
 				"command": "claudeBridge.showStatus",

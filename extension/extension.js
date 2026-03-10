@@ -7,11 +7,15 @@ let statusBarItem;
 /** @type {vscode.FileSystemWatcher} */
 let watcher;
 /** @type {vscode.FileSystemWatcher} */
+let codexWatcher;
+/** @type {vscode.FileSystemWatcher} */
 let bridgeDirWatcher;
 /** @type {vscode.FileSystemWatcher} */
 let responseWatcher;
 /** @type {boolean} */
-let processing = false;
+let processingGemini = false;
+/** @type {boolean} */
+let processingCodex = false;
 /** @type {NodeJS.Timeout|null} */
 let autoApproveTimer = null;
 /** @type {NodeJS.Timeout|null} */
@@ -20,162 +24,195 @@ let responseTimer = null;
 let retryCount = 0;
 /** @type {Set<string>} */
 let knownResponseFiles = new Set();
+/** @type {string|null} - 현재 응답 대기 중인 타겟 */
+let activeTarget = null;
 
 /** 자동 승인 폴링 지속 시간 (ms) — RESPONSE_TIMEOUT * MAX_RETRIES 보다 길어야 함 */
-const AUTO_APPROVE_DURATION = 600000;
+const AUTO_APPROVE_DURATION = 2100000;
 /** 자동 승인 폴링 간격 (ms) */
 const AUTO_APPROVE_INTERVAL = 2000;
 /** 응답 대기 타임아웃 (ms) — 이 시간 내에 응답 없으면 continue 전송 */
-const RESPONSE_TIMEOUT = 180000;
+const RESPONSE_TIMEOUT = 600000;
 /** 최대 continue 재시도 횟수 */
 const MAX_RETRIES = 3;
 
-/**
- * bridge/from-claude/ 디렉토리 경로를 찾는다.
- */
+// =======================================================================
+//  디렉토리 탐색
+// =======================================================================
+
 function findBridgeDir() {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders) return null;
-
     for (const folder of folders) {
         const candidate = path.join(folder.uri.fsPath, 'bridge', 'from-claude');
-        if (fs.existsSync(candidate)) {
-            return candidate;
-        }
+        if (fs.existsSync(candidate)) return candidate;
     }
     return null;
 }
 
-/**
- * bridge/from-gemini/ 디렉토리 경로를 찾는다.
- */
-function findResponseDir() {
+function findResponseDir(target) {
+    const sub = target === 'codex' ? 'from-codex' : 'from-gemini';
     const folders = vscode.workspace.workspaceFolders;
     if (!folders) return null;
-
     for (const folder of folders) {
-        const candidate = path.join(folder.uri.fsPath, 'bridge', 'from-gemini');
-        if (fs.existsSync(candidate)) {
-            return candidate;
-        }
+        const candidate = path.join(folder.uri.fsPath, 'bridge', sub);
+        if (fs.existsSync(candidate)) return candidate;
     }
     return null;
 }
 
-/**
- * from-gemini/의 현재 .md 파일 목록을 스냅샷으로 저장한다.
- */
-function snapshotResponseFiles() {
-    const responseDir = findResponseDir();
+function snapshotResponseFiles(target) {
+    const responseDir = findResponseDir(target);
     knownResponseFiles.clear();
     if (responseDir && fs.existsSync(responseDir)) {
         for (const f of fs.readdirSync(responseDir)) {
-            if (f.endsWith('.md')) {
-                knownResponseFiles.add(f);
-            }
+            if (f.endsWith('.md')) knownResponseFiles.add(f);
         }
     }
 }
 
-/**
- * 트리거 파일을 처리하여 Gemini Agent 채팅에 메시지를 전송한다.
- * @param {vscode.Uri} uri
- */
-async function handleTriggerFile(uri) {
-    if (processing) return;
-    processing = true;
+// =======================================================================
+//  Gemini 트리거 처리
+// =======================================================================
+
+async function handleGeminiTrigger(uri) {
+    if (processingGemini) return;
+    processingGemini = true;
 
     try {
         const filePath = uri.fsPath;
-
-        // .trigger 파일만 처리
         if (!filePath.endsWith('.trigger')) return;
 
-        // 파일 내용 읽기
         const content = fs.readFileSync(filePath, 'utf-8').trim();
         if (!content) {
             vscode.window.showWarningMessage('Claude Bridge: 빈 트리거 파일 무시됨');
             return;
         }
 
-        // 전송 전 응답 파일 스냅샷 (새 응답 감지용)
-        snapshotResponseFiles();
+        snapshotResponseFiles('gemini');
         retryCount = 0;
+        activeTarget = 'gemini';
 
-        updateStatus('$(sync~spin) Sending...');
+        updateStatus('$(sync~spin) Gemini 전송...');
 
-        // 직접 Agent Panel에 프롬프트 전송
         try {
             await vscode.commands.executeCommand('antigravity.sendPromptToAgentPanel', content);
         } catch (e) {
             await vscode.commands.executeCommand('antigravity.sendTextToChat', content);
         }
 
-        // 트리거 파일 삭제
-        try {
-            fs.unlinkSync(filePath);
-        } catch (e) {
-            // 이미 삭제된 경우 무시
-        }
+        try { fs.unlinkSync(filePath); } catch (e) { /* ignore */ }
 
-        // 자동 승인 + 응답 대기 시작
         startAutoApprove();
-        startResponseWatch();
+        startResponseWatch('gemini');
 
         updateStatus('$(sync~spin) Gemini 응답 대기...');
         vscode.window.showInformationMessage(
-            `Claude Bridge: 메시지 전송 완료 (${content.length}자)`
+            `Claude Bridge: Gemini 전송 완료 (${content.length}자)`
         );
-
     } catch (err) {
         vscode.window.showErrorMessage(`Claude Bridge 오류: ${err.message}`);
         updateStatus('$(error) Error');
         setTimeout(() => updateStatus('$(plug) Claude Bridge'), 3000);
     } finally {
-        processing = false;
+        processingGemini = false;
     }
 }
 
-/**
- * 응답 대기 + 자동 continue 로직 시작.
- * from-gemini/에 새 .md 파일이 나타나면 성공.
- * 타임아웃 내에 안 나타나면 "continue" 전송.
- */
-function startResponseWatch() {
+// =======================================================================
+//  Codex 트리거 처리
+// =======================================================================
+
+async function handleCodexTrigger(uri) {
+    if (processingCodex) return;
+    processingCodex = true;
+
+    try {
+        const filePath = uri.fsPath;
+        if (!filePath.endsWith('.codex-trigger')) return;
+
+        const raw = fs.readFileSync(filePath, 'utf-8').trim();
+        if (!raw) {
+            vscode.window.showWarningMessage('Claude Bridge: 빈 Codex 트리거 무시됨');
+            return;
+        }
+
+        // frontmatter 이후의 본문만 추출
+        let content = raw;
+        const fmMatch = raw.match(/^---[\s\S]*?---\s*([\s\S]*)$/);
+        if (fmMatch) content = fmMatch[1].trim();
+
+        // frontmatter에서 response_file 추출
+        let responseFile = null;
+        const rfMatch = raw.match(/^response_file:\s*"?([^"\n]+)"?/m);
+        if (rfMatch) responseFile = rfMatch[1].trim();
+
+        snapshotResponseFiles('codex');
+        activeTarget = 'codex';
+
+        updateStatus('$(sync~spin) Codex 전송...');
+
+        // implementTodo로 Codex에 전송
+        // fileName에 응답 파일 경로를 넣으면 Codex가 해당 파일에 작업함
+        const targetFile = responseFile || 'bridge/from-codex/response.md';
+        await vscode.commands.executeCommand('chatgpt.implementTodo', {
+            line: 1,
+            fileName: targetFile,
+            comment: content,
+        });
+
+        try { fs.unlinkSync(filePath); } catch (e) { /* ignore */ }
+
+        startResponseWatch('codex');
+
+        updateStatus('$(sync~spin) Codex 응답 대기...');
+        vscode.window.showInformationMessage(
+            `Claude Bridge: Codex 전송 완료 (${content.length}자)`
+        );
+    } catch (err) {
+        vscode.window.showErrorMessage(`Claude Bridge Codex 오류: ${err.message}`);
+        updateStatus('$(error) Error');
+        setTimeout(() => updateStatus('$(plug) Claude Bridge'), 3000);
+    } finally {
+        processingCodex = false;
+    }
+}
+
+// =======================================================================
+//  응답 대기 + 자동 continue
+// =======================================================================
+
+function startResponseWatch(target) {
     stopResponseWatch();
 
-    // 응답 디렉토리의 파일 생성 감시
-    const responseDir = findResponseDir();
+    const responseDir = findResponseDir(target);
     if (responseDir) {
         const pattern = new vscode.RelativePattern(responseDir, '*.md');
         responseWatcher = vscode.workspace.createFileSystemWatcher(pattern);
         responseWatcher.onDidCreate((uri) => {
             const filename = path.basename(uri.fsPath);
             if (!knownResponseFiles.has(filename)) {
-                onResponseReceived(filename);
+                onResponseReceived(target, filename);
             }
         });
     }
 
-    // 타임아웃 타이머 시작
-    scheduleRetry();
+    // Gemini만 auto-continue (Codex는 에이전트가 알아서 함)
+    if (target === 'gemini') {
+        scheduleRetry();
+    }
 }
 
-/**
- * 타임아웃 후 "continue" 전송을 예약한다.
- */
 function scheduleRetry() {
-    if (responseTimer) {
-        clearTimeout(responseTimer);
-    }
+    if (responseTimer) clearTimeout(responseTimer);
 
     responseTimer = setTimeout(async () => {
         retryCount++;
 
         if (retryCount > MAX_RETRIES) {
-            updateStatus('$(error) Gemini 응답 없음');
+            updateStatus('$(error) 응답 없음');
             vscode.window.showWarningMessage(
-                `Claude Bridge: ${MAX_RETRIES}회 재시도 후에도 Gemini 응답 없음. 수동 확인 필요.`
+                `Claude Bridge: ${MAX_RETRIES}회 재시도 후에도 응답 없음. 수동 확인 필요.`
             );
             stopResponseWatch();
             stopAutoApprove();
@@ -191,53 +228,45 @@ function scheduleRetry() {
         } catch (e) {
             try {
                 await vscode.commands.executeCommand('antigravity.sendTextToChat', 'continue');
-            } catch (e2) {
-                // 전송 실패 무시
-            }
+            } catch (e2) { /* ignore */ }
         }
 
-        // 다음 타임아웃 예약
         scheduleRetry();
     }, RESPONSE_TIMEOUT);
 }
 
-/**
- * Gemini 응답 파일이 감지되었을 때 호출.
- * @param {string} filename
- */
-function onResponseReceived(filename) {
-    console.log(`Claude Bridge: Gemini 응답 감지 → ${filename}`);
-    updateStatus('$(check) 응답 완료');
+function onResponseReceived(target, filename) {
+    const label = target === 'codex' ? 'Codex' : 'Gemini';
+    console.log(`Claude Bridge: ${label} 응답 감지 → ${filename}`);
+    updateStatus(`$(check) ${label} 응답 완료`);
     vscode.window.showInformationMessage(
-        `Claude Bridge: Gemini 응답 완료 → ${filename}`
+        `Claude Bridge: ${label} 응답 완료 → ${filename}`
     );
 
     stopResponseWatch();
     stopAutoApprove();
+    activeTarget = null;
 
     setTimeout(() => updateStatus('$(plug) Claude Bridge'), 3000);
 }
 
-/**
- * 응답 대기 중지.
- */
 function stopResponseWatch() {
-    if (responseTimer) {
-        clearTimeout(responseTimer);
-        responseTimer = null;
-    }
-    if (responseWatcher) {
-        responseWatcher.dispose();
-        responseWatcher = null;
-    }
+    if (responseTimer) { clearTimeout(responseTimer); responseTimer = null; }
+    if (responseWatcher) { responseWatcher.dispose(); responseWatcher = null; }
 }
 
-/**
- * 수동 명령어: 입력 다이얼로그로 메시지를 받아 Gemini에 전송
- */
+// =======================================================================
+//  수동 명령어
+// =======================================================================
+
 async function sendMessageCommand() {
+    const target = await vscode.window.showQuickPick(['Gemini', 'Codex'], {
+        placeHolder: '전송 대상을 선택하세요',
+    });
+    if (!target) return;
+
     const message = await vscode.window.showInputBox({
-        prompt: 'Gemini Agent에 보낼 메시지를 입력하세요',
+        prompt: `${target}에 보낼 메시지를 입력하세요`,
         placeHolder: '메시지 입력...',
     });
     if (!message) return;
@@ -250,23 +279,20 @@ async function sendMessageCommand() {
         return;
     }
 
-    const triggerPath = path.join(bridgeDir, `manual-${Date.now()}.trigger`);
+    const ext = target === 'Codex' ? '.codex-trigger' : '.trigger';
+    const triggerPath = path.join(bridgeDir, `manual-${Date.now()}${ext}`);
     fs.writeFileSync(triggerPath, message, 'utf-8');
 }
 
-/**
- * 진단 명령어: Antigravity 관련 사용 가능한 명령어 목록을 출력
- */
 async function listCommandsCommand() {
     const allCommands = await vscode.commands.getCommands(true);
-    const keywords = ['antigravity', 'cascade', 'chat', 'agent', 'send', 'submit', 'paste', 'mention'];
+    const keywords = ['antigravity', 'cascade', 'chat', 'agent', 'send', 'submit', 'paste', 'mention', 'chatgpt', 'codex'];
     const matches = allCommands.filter(cmd => {
         const lower = cmd.toLowerCase();
         return keywords.some(kw => lower.includes(kw));
     });
     matches.sort();
 
-    // 파일로 저장
     const bridgeDir = findBridgeDir();
     const outPath = bridgeDir
         ? path.join(path.dirname(bridgeDir), 'available-commands.txt')
@@ -278,25 +304,21 @@ async function listCommandsCommand() {
     );
 }
 
+// =======================================================================
+//  상태바 + 유틸
+// =======================================================================
+
 function updateStatus(text) {
-    if (statusBarItem) {
-        statusBarItem.text = text;
-    }
+    if (statusBarItem) statusBarItem.text = text;
 }
 
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
+// =======================================================================
+//  자동 승인 (Gemini용)
+// =======================================================================
 
-/**
- * 자동 승인 폴링 시작.
- * Gemini Agent가 파일 접근 권한을 요청할 때 자동으로 acceptAgentStep 실행.
- */
 function startAutoApprove() {
     stopAutoApprove();
-
     let elapsed = 0;
-    updateStatus('$(sync~spin) Auto-approving...');
 
     const approveCommands = [
         'antigravity.agent.acceptAgentStep',
@@ -306,45 +328,29 @@ function startAutoApprove() {
 
     autoApproveTimer = setInterval(async () => {
         elapsed += AUTO_APPROVE_INTERVAL;
-
         for (const cmd of approveCommands) {
-            try {
-                await vscode.commands.executeCommand(cmd);
-            } catch (e) {
-                // 해당 승인 대상이 없으면 무시
-            }
+            try { await vscode.commands.executeCommand(cmd); } catch (e) { /* ignore */ }
         }
-
-        if (elapsed >= AUTO_APPROVE_DURATION) {
-            stopAutoApprove();
-        }
+        if (elapsed >= AUTO_APPROVE_DURATION) stopAutoApprove();
     }, AUTO_APPROVE_INTERVAL);
 }
 
-/**
- * 자동 승인 폴링 중지.
- */
 function stopAutoApprove() {
-    if (autoApproveTimer) {
-        clearInterval(autoApproveTimer);
-        autoApproveTimer = null;
-    }
+    if (autoApproveTimer) { clearInterval(autoApproveTimer); autoApproveTimer = null; }
 }
 
-/**
- * @param {vscode.ExtensionContext} context
- */
-function activate(context) {
-    console.log('Claude Bridge 익스텐션 활성화됨');
+// =======================================================================
+//  활성화 / 비활성화
+// =======================================================================
 
-    // 상태바 아이템 생성
-    statusBarItem = vscode.window.createStatusBarItem(
-        vscode.StatusBarAlignment.Left,
-        100
-    );
+function activate(context) {
+    console.log('Claude Bridge 익스텐션 활성화됨 (Gemini + Codex)');
+
+    // 상태바
+    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBarItem.command = 'claudeBridge.showStatus';
     updateStatus('$(plug) Claude Bridge');
-    statusBarItem.tooltip = 'Claude Bridge - Gemini Agent 브릿지 활성';
+    statusBarItem.tooltip = 'Claude Bridge — Gemini + Codex 브릿지';
     statusBarItem.show();
     context.subscriptions.push(statusBarItem);
 
@@ -355,14 +361,16 @@ function activate(context) {
     context.subscriptions.push(
         vscode.commands.registerCommand('claudeBridge.showStatus', () => {
             const bridgeDir = findBridgeDir();
-            if (bridgeDir) {
-                vscode.window.showInformationMessage(
-                    `Claude Bridge 활성 | 감시 경로: ${bridgeDir}`
-                );
+            const geminiDir = findResponseDir('gemini');
+            const codexDir = findResponseDir('codex');
+            const parts = [];
+            if (bridgeDir) parts.push(`트리거: ${bridgeDir}`);
+            if (geminiDir) parts.push('Gemini ✅');
+            if (codexDir) parts.push('Codex ✅');
+            if (parts.length > 0) {
+                vscode.window.showInformationMessage(`Claude Bridge | ${parts.join(' | ')}`);
             } else {
-                vscode.window.showWarningMessage(
-                    'Claude Bridge: bridge/from-claude/ 디렉토리를 찾을 수 없습니다.'
-                );
+                vscode.window.showWarningMessage('Claude Bridge: bridge/ 디렉토리를 찾을 수 없습니다.');
             }
         })
     );
@@ -370,28 +378,21 @@ function activate(context) {
         vscode.commands.registerCommand('claudeBridge.listCommands', listCommandsCommand)
     );
 
-    // bridge/from-claude/ 디렉토리 감시 설정
-    setupWatcher(context);
+    // watcher 설정
+    setupWatchers(context);
 
-    // 워크스페이스 변경 시 watcher 재설정
     context.subscriptions.push(
         vscode.workspace.onDidChangeWorkspaceFolders(() => {
-            if (watcher) {
-                watcher.dispose();
-            }
-            setupWatcher(context);
+            disposeWatchers();
+            setupWatchers(context);
         })
     );
 }
 
-/**
- * FileSystemWatcher 설정
- * @param {vscode.ExtensionContext} context
- */
-function setupWatcher(context) {
+function setupWatchers(context) {
     const bridgeDir = findBridgeDir();
     if (!bridgeDir) {
-        console.log('Claude Bridge: bridge/from-claude/ 디렉토리 미발견, 디렉토리 생성 감시 시작...');
+        console.log('Claude Bridge: bridge/from-claude/ 미발견, 디렉토리 생성 감시...');
         updateStatus('$(plug) Claude Bridge (대기)');
         startBridgeDirWatcher(context);
         return;
@@ -399,68 +400,63 @@ function setupWatcher(context) {
 
     stopBridgeDirWatcher();
 
-    const pattern = new vscode.RelativePattern(bridgeDir, '*.trigger');
-    watcher = vscode.workspace.createFileSystemWatcher(pattern);
-
-    watcher.onDidCreate(handleTriggerFile);
-    watcher.onDidChange(handleTriggerFile);
-
+    // Gemini 트리거 (.trigger) 감시
+    const geminiPattern = new vscode.RelativePattern(bridgeDir, '*.trigger');
+    watcher = vscode.workspace.createFileSystemWatcher(geminiPattern);
+    watcher.onDidCreate(handleGeminiTrigger);
+    watcher.onDidChange(handleGeminiTrigger);
     context.subscriptions.push(watcher);
 
+    // Codex 트리거 (.codex-trigger) 감시
+    const codexPattern = new vscode.RelativePattern(bridgeDir, '*.codex-trigger');
+    codexWatcher = vscode.workspace.createFileSystemWatcher(codexPattern);
+    codexWatcher.onDidCreate(handleCodexTrigger);
+    codexWatcher.onDidChange(handleCodexTrigger);
+    context.subscriptions.push(codexWatcher);
+
     updateStatus('$(plug) Claude Bridge');
-    console.log(`Claude Bridge: 감시 시작 → ${bridgeDir}`);
+    console.log(`Claude Bridge: 감시 시작 → ${bridgeDir} (.trigger + .codex-trigger)`);
 
     // 이미 존재하는 트리거 파일 처리
-    const existing = fs.readdirSync(bridgeDir).filter(f => f.endsWith('.trigger'));
-    if (existing.length > 0) {
-        console.log(`Claude Bridge: 기존 트리거 파일 ${existing.length}개 발견`);
-        for (const file of existing) {
-            handleTriggerFile(vscode.Uri.file(path.join(bridgeDir, file)));
+    const existing = fs.readdirSync(bridgeDir);
+    for (const file of existing) {
+        if (file.endsWith('.codex-trigger')) {
+            handleCodexTrigger(vscode.Uri.file(path.join(bridgeDir, file)));
+        } else if (file.endsWith('.trigger')) {
+            handleGeminiTrigger(vscode.Uri.file(path.join(bridgeDir, file)));
         }
     }
 }
 
-/**
- * bridge/from-claude/ 디렉토리 생성을 감시.
- * /gemini init 후 재시작 없이 자동으로 trigger watcher를 시작한다.
- * @param {vscode.ExtensionContext} context
- */
 function startBridgeDirWatcher(context) {
     stopBridgeDirWatcher();
-
     const folders = vscode.workspace.workspaceFolders;
     if (!folders) return;
 
-    // workspace 내 bridge/from-claude/ 하위에 파일이 생기면 감지
     for (const folder of folders) {
         const pattern = new vscode.RelativePattern(folder, 'bridge/from-claude/*');
         bridgeDirWatcher = vscode.workspace.createFileSystemWatcher(pattern);
-
-        bridgeDirWatcher.onDidCreate((uri) => {
+        bridgeDirWatcher.onDidCreate(() => {
             console.log('Claude Bridge: bridge/from-claude/ 감지됨, watcher 전환');
             stopBridgeDirWatcher();
-            setupWatcher(context);
+            setupWatchers(context);
         });
-
         context.subscriptions.push(bridgeDirWatcher);
     }
 }
 
-/**
- * bridge 디렉토리 감시 중지.
- */
 function stopBridgeDirWatcher() {
-    if (bridgeDirWatcher) {
-        bridgeDirWatcher.dispose();
-        bridgeDirWatcher = null;
-    }
+    if (bridgeDirWatcher) { bridgeDirWatcher.dispose(); bridgeDirWatcher = null; }
+}
+
+function disposeWatchers() {
+    if (watcher) { watcher.dispose(); watcher = null; }
+    if (codexWatcher) { codexWatcher.dispose(); codexWatcher = null; }
+    stopBridgeDirWatcher();
 }
 
 function deactivate() {
-    if (watcher) {
-        watcher.dispose();
-    }
-    stopBridgeDirWatcher();
+    disposeWatchers();
     stopResponseWatch();
     stopAutoApprove();
     console.log('Claude Bridge 익스텐션 비활성화됨');

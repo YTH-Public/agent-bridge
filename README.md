@@ -109,8 +109,8 @@ Claude Code에서 아래 명령어를 사용합니다:
 
 Gemini가 에러로 멈추면 자동으로 "continue"를 보내 복구합니다.
 
-- **Extension**: `from-gemini/`에 3분간 새 파일이 없으면 자동 재전송합니다 (최대 3회)
-- **bridge.py `ask` 모드**: 동일한 로직을 CLI에서 수행합니다 (`--timeout 180 --retries 3`)
+- **Extension**: `from-gemini/`에 10분간 새 파일이 없으면 자동 재전송합니다 (최대 3회)
+- **bridge.py `ask` 모드**: 동일한 로직을 CLI에서 수행합니다 (`--timeout 600 --retries 3`)
 
 ### 자동 디렉토리 감지
 
