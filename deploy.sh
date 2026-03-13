@@ -76,23 +76,21 @@ deploy_windows() {
     copy_file "$SCRIPT_DIR/extension/package.json"  "$ext_dst/package.json"  "package.json (Windows)"
     copy_file "$SCRIPT_DIR/extension/.vsixmanifest"  "$ext_dst/.vsixmanifest"  ".vsixmanifest (Windows)"
 
-    # extensions.json 업데이트 (Antigravity가 익스텐션을 인식하도록)
+    # extensions.json 업데이트 (Python으로 안전하게 처리)
     local ext_json="$win_home/.antigravity/extensions/extensions.json"
     local ext_id="${EXT_PUBLISHER}.${EXT_NAME}"
     local ext_rel="${EXT_PUBLISHER}.${EXT_NAME}-${EXT_VERSION}-universal"
+    local ext_path="/c:/Users/${USERNAME}/.antigravity/extensions/${ext_rel}"
     if [ -f "$ext_json" ]; then
-        if grep -q "\"id\":\"${ext_id}\"" "$ext_json"; then
-            # 기존 항목의 버전과 경로를 업데이트
-            sed -i 's|"'"${EXT_PUBLISHER}"'\.'"${EXT_NAME}"'-[0-9.]*-universal"|"'"${ext_rel}"'"|g' "$ext_json"
-            sed -i 's|"version":"[0-9.]*","location":{"\$mid":1,"path":"/c:/Users/[^"]*/'"${ext_rel}"'"|"version":"'"${EXT_VERSION}"'","location":{"\$mid":1,"path":"/c:/Users/'"${USERNAME}"'/.antigravity/extensions/'"${ext_rel}"'"|' "$ext_json"
-            echo "  [OK] extensions.json 업데이트"
-        else
-            # 새 항목 추가
-            local entry='{"identifier":{"id":"'"${ext_id}"'"},"version":"'"${EXT_VERSION}"'","location":{"$mid":1,"path":"/c:/Users/'"${USERNAME}"'/.antigravity/extensions/'"${ext_rel}"'","scheme":"file"},"relativeLocation":"'"${ext_rel}"'","metadata":{"installedTimestamp":'"$(date +%s)"'000,"pinned":false,"source":"gallery","targetPlatform":"universal","updated":false,"private":false,"isPreReleaseVersion":false,"hasPreReleaseVersion":false}}'
-            # 마지막 ] 앞에 추가
-            sed -i 's|\]$|,'"${entry}"']|' "$ext_json"
-            echo "  [OK] extensions.json 새 항목 추가"
-        fi
+        py -c "
+import json, sys
+fp = sys.argv[1]
+with open(fp, 'r') as f: data = json.loads(f.read())
+data = [e for e in data if e.get('identifier',{}).get('id') != sys.argv[2]]
+data.append({'identifier':{'id':sys.argv[2]},'version':sys.argv[3],'location':{'\$mid':1,'path':sys.argv[4],'scheme':'file'},'relativeLocation':sys.argv[5],'metadata':{'installedTimestamp':1772243460000,'pinned':False,'source':'gallery','targetPlatform':'universal','updated':False,'private':False,'isPreReleaseVersion':False,'hasPreReleaseVersion':False}})
+with open(fp, 'w') as f: json.dump(data, f, separators=(',',':'))
+" "$ext_json" "$ext_id" "$EXT_VERSION" "$ext_path" "$ext_rel"
+        echo "  [OK] extensions.json 업데이트"
     fi
 
     echo ""
@@ -139,29 +137,19 @@ deploy_windows() {
         echo "       $wsl_ext/$f"
     done
 
-    # WSL extensions.json 업데이트
+    # WSL extensions.json 업데이트 (Python으로 안전하게 처리)
     local wsl_ext_json="$WSL_HOME/.antigravity-server/extensions/extensions.json"
     local wsl_ext_rel="${EXT_PUBLISHER}.${EXT_NAME}-${EXT_VERSION}"
-    MSYS_NO_PATHCONV=1 wsl -e bash -c '
-        EXT_JSON="'"$wsl_ext_json"'"
-        EXT_ID="'"${ext_id}"'"
-        EXT_VER="'"${EXT_VERSION}"'"
-        EXT_REL="'"${wsl_ext_rel}"'"
-        EXT_PUB="'"${EXT_PUBLISHER}"'"
-        EXT_NM="'"${EXT_NAME}"'"
-        WSL_HOME_DIR="'"${WSL_HOME}"'"
-        if [ -f "$EXT_JSON" ]; then
-            if grep -q "\"id\":\"${EXT_ID}\"" "$EXT_JSON"; then
-                sed -i "s|${EXT_PUB}\.${EXT_NM}-[0-9.]*|${EXT_REL}|g" "$EXT_JSON"
-                sed -i "s|\"version\":\"[0-9.]*\",\"location\":{|\"version\":\"${EXT_VER}\",\"location\":{|g" "$EXT_JSON"
-                echo "  [OK] extensions.json 업데이트 (WSL)"
-            else
-                ENTRY="{\"identifier\":{\"id\":\"${EXT_ID}\"},\"version\":\"${EXT_VER}\",\"location\":{\"\$mid\":1,\"path\":\"${WSL_HOME_DIR}/.antigravity-server/extensions/${EXT_REL}\",\"scheme\":\"file\"},\"relativeLocation\":\"${EXT_REL}\",\"metadata\":{\"installedTimestamp\":$(date +%s)000,\"pinned\":false,\"source\":\"gallery\",\"targetPlatform\":\"universal\",\"updated\":false,\"private\":false,\"isPreReleaseVersion\":false,\"hasPreReleaseVersion\":false}}"
-                sed -i "s|\\]$|,${ENTRY}]|" "$EXT_JSON"
-                echo "  [OK] extensions.json 새 항목 추가 (WSL)"
-            fi
-        fi
-    '
+    local wsl_ext_path="$WSL_HOME/.antigravity-server/extensions/${wsl_ext_rel}"
+    MSYS_NO_PATHCONV=1 wsl python3 -c '
+import json, sys
+fp, ext_id, ext_ver, ext_path, ext_rel = sys.argv[1:6]
+with open(fp, "r") as f: data = json.loads(f.read())
+data = [e for e in data if e.get("identifier",{}).get("id") != ext_id]
+data.append({"identifier":{"id":ext_id},"version":ext_ver,"location":{"$mid":1,"path":ext_path,"scheme":"file"},"relativeLocation":ext_rel,"metadata":{"isApplicationScoped":False,"isMachineScoped":True,"isBuiltin":False,"installedTimestamp":1772243460000,"pinned":True,"source":"vsix"}})
+with open(fp, "w") as f: json.dump(data, f, separators=(",",":"))
+' "$wsl_ext_json" "$ext_id" "$EXT_VERSION" "$wsl_ext_path" "$wsl_ext_rel"
+    echo "  [OK] extensions.json 업데이트 (WSL)"
 }
 
 # ── WSL 네이티브 배포 ─────────────────────────────────────

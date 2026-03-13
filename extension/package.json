@@ -10,6 +10,7 @@
 	"activationEvents": [
 		"*"
 	],
+	"extensionKind": ["workspace"],
 	"main": "./extension.js",
 	"contributes": {
 		"commands": [

@@ -1,6 +1,6 @@
 ---
 name: codex
-description: "Codex에게 메시지를 보내거나 응답을 읽는 브릿지 명령. send/ask/read/list/init 지원. 예: /codex 이 함수 리팩토링해줘, /codex read, /codex init"
+description: "Codex(ChatGPT/챗지피티)에게 메시지를 보내거나 응답을 읽는 브릿지 명령. send/ask/read/list/init 지원. 예: /codex 이 함수 리팩토링해줘, /codex read, /codex init. '코덱스', '챗지피티', 'ChatGPT'도 이 명령을 사용."
 ---
 
 # Codex Bridge Skill (Windows → WSL)
@@ -156,6 +156,36 @@ MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/agent-bridge/bridge.
 1. `/codex init` 실행 → bridge 디렉토리 + codex-context.md 자동 생성
 2. Antigravity에서 해당 프로젝트를 열고 Codex 익스텐션 활성화
 3. `/codex 요청` 으로 Codex에게 요청
+
+## 병렬 전송 (Gemini + Codex 동시)
+
+사용자가 Gemini와 Codex 양쪽에 동시에 보내달라고 하면, **`ask` 대신 `send`를 사용**한다.
+`ask`는 응답을 기다리며 블로킹하므로 병렬 전송이 불가능하다.
+
+### 절차
+
+1. **Gemini에 send** (즉시 리턴):
+```bash
+MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/agent-bridge/bridge.py --dir "<WSL경로>" send "<메시지>" --topic "<토픽>"'
+```
+
+2. **Codex에 send** (즉시 리턴):
+```bash
+MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/agent-bridge/bridge.py --target codex --dir "<WSL경로>" send "<메시지>" --topic "<토픽>"'
+```
+
+3. **양쪽 응답 상태 확인** (둘 다 올 때까지 반복):
+```bash
+MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/agent-bridge/bridge.py --dir "<WSL경로>" status --after "<전송시각ISO>"'
+```
+- exit code 0 = 양쪽 모두 응답 완료
+- exit code 1 = 아직 대기 중인 응답 있음
+
+4. **응답 읽기**:
+```bash
+MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/agent-bridge/bridge.py --dir "<WSL경로>" --source gemini latest'
+MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/agent-bridge/bridge.py --dir "<WSL경로>" --source codex latest'
+```
 
 ## 주의사항
 

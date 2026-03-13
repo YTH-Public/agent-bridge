@@ -405,6 +405,77 @@ def cmd_ask(args):
     print(f"   나중에 `latest --source {target}` 로 확인하세요.")
 
 
+def cmd_status(args):
+    """양쪽 브릿지의 응답 상태를 확인한다."""
+    bridge = resolve_bridge_dir(args.dir)
+    sources = get_sources(bridge)
+
+    # --after 타임스탬프 이후의 새 파일만 확인
+    after_ts = 0.0
+    if args.after:
+        try:
+            dt = datetime.datetime.strptime(args.after, "%Y-%m-%dT%H:%M:%S")
+            after_ts = dt.timestamp()
+        except ValueError:
+            try:
+                after_ts = float(args.after)
+            except ValueError:
+                print(f"⚠️  --after 형식 오류: {args.after}")
+                after_ts = 0.0
+
+    results = {}
+    for target in ["gemini", "codex"]:
+        resp_dir = sources[target]
+        if not resp_dir.exists():
+            results[target] = {"status": "no_dir", "file": None}
+            continue
+
+        md_files = sorted(resp_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
+        if not md_files:
+            results[target] = {"status": "empty", "file": None}
+            continue
+
+        newest = md_files[0]
+        mtime = newest.stat().st_mtime
+
+        if after_ts > 0 and mtime < after_ts:
+            results[target] = {"status": "waiting", "file": None}
+        else:
+            results[target] = {"status": "ready", "file": newest, "mtime": mtime}
+
+    # 출력
+    all_ready = True
+    for target in ["gemini", "codex"]:
+        r = results[target]
+        label = "Gemini" if target == "gemini" else "Codex"
+        if r["status"] == "ready":
+            rel = r["file"].relative_to(bridge)
+            ago = int(time.time() - r["mtime"])
+            if ago < 60:
+                ago_str = f"{ago}초 전"
+            else:
+                ago_str = f"{ago // 60}분 전"
+            print(f"  {label}: ✅ {rel} ({ago_str})")
+        elif r["status"] == "waiting":
+            print(f"  {label}: ⏳ 응답 대기 중")
+            all_ready = False
+        elif r["status"] == "no_dir":
+            print(f"  {label}: — 디렉토리 없음")
+            all_ready = False
+        else:
+            print(f"  {label}: — 파일 없음")
+            all_ready = False
+
+    if all_ready:
+        print("\n✅ 양쪽 모두 응답 완료")
+    else:
+        print("\n⏳ 아직 대기 중인 응답이 있습니다")
+
+    # exit code로도 상태 전달 (스크립트 활용용)
+    if not all_ready:
+        raise SystemExit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(description="AI Bridge — Gemini + Codex")
     parser.add_argument(
@@ -446,6 +517,9 @@ def main():
     p_ask.add_argument("--timeout", type=int, default=600, help="대기 시간 초 (기본: 600)")
     p_ask.add_argument("--retries", type=int, default=3, help="재시도 횟수 (기본: 3)")
 
+    p_status = sub.add_parser("status", help="양쪽 브릿지 응답 상태 확인")
+    p_status.add_argument("--after", default=None, help="이 시각 이후 파일만 확인 (ISO 또는 epoch)")
+
     args = parser.parse_args()
 
     commands = {
@@ -455,6 +529,7 @@ def main():
         "search": cmd_search,
         "send": cmd_send,
         "ask": cmd_ask,
+        "status": cmd_status,
     }
     commands[args.command](args)
 
