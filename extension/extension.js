@@ -152,14 +152,23 @@ async function handleCodexTrigger(uri) {
 
         updateStatus('$(sync~spin) Codex 전송...');
 
-        // implementTodo로 Codex에 전송
-        // fileName에 응답 파일 경로를 넣으면 Codex가 해당 파일에 작업함
+        // implementTodo로 Codex에 전송 (매번 새 스레드, 프로젝트 맥락은 codex-context.md로 유지)
         const targetFile = responseFile || 'bridge/from-codex/response.md';
         await vscode.commands.executeCommand('chatgpt.implementTodo', {
             line: 1,
             fileName: targetFile,
             comment: content,
         });
+
+        // implementTodo가 Windows에서 우측 Secondary Sidebar에 빈 패널을 여는 부작용 방지
+        setTimeout(async () => {
+            try {
+                await vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar');
+                setTimeout(() => {
+                    vscode.commands.executeCommand('workbench.action.toggleAuxiliaryBar').catch(() => {});
+                }, 200);
+            } catch (e) { /* ignore */ }
+        }, 300);
 
         try { fs.unlinkSync(filePath); } catch (e) { /* ignore */ }
 
