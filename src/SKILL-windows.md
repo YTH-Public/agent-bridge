@@ -1,6 +1,6 @@
 ---
 name: gemini
-description: "Gemini(제미나이)에게 메시지를 보내거나 응답을 읽는 브릿지 명령. send/ask/read/list/init 지원. 예: /gemini 단어 데이터 생성해줘, /gemini read, /gemini init. '제미나이'도 이 명령을 사용."
+description: "Gemini(제미나이)에게 메시지를 보내거나 응답을 읽는 브릿지 명령. send/ask/read/list/init 지원. 예: /gemini 단어 데이터 생성해줘, /gemini read, /gemini init. '제미나이'도 이 명령을 사용. Codex(ChatGPT)에게 보내려면 /codex 사용."
 ---
 
 # Gemini Bridge Skill (Windows → WSL)
