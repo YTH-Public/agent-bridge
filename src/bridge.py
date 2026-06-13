@@ -16,7 +16,10 @@
 
 import argparse
 import datetime
+import json
 import os
+import re
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -255,6 +258,60 @@ def get_md_files(bridge: Path, source: str = "all") -> list:
     return sorted(files, key=lambda f: f.name, reverse=True)
 
 
+# === 모드 설정 (file-bridge vs agy) ===
+
+CONFIG_FILENAME = "bridge-config.json"
+VALID_GEMINI_MODES = ("file-bridge", "agy")
+
+
+def _config_path(bridge: Path) -> Path:
+    return bridge / CONFIG_FILENAME
+
+
+def load_config(bridge: Path) -> dict:
+    """bridge-config.json을 읽는다. 없으면 기본값(file-bridge)."""
+    fp = _config_path(bridge)
+    default = {"gemini": {"mode": "file-bridge"}, "codex": {"mode": "file-bridge"}}
+    if not fp.exists():
+        return default
+    try:
+        data = json.loads(fp.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return default
+    # 누락 키 보정
+    data.setdefault("gemini", {}).setdefault("mode", "file-bridge")
+    data.setdefault("codex", {}).setdefault("mode", "file-bridge")
+    return data
+
+
+def save_config(bridge: Path, config: dict) -> None:
+    _config_path(bridge).write_text(
+        json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def get_mode(bridge: Path, target: str) -> str:
+    """대상(gemini/codex)의 전송 모드를 반환한다. codex는 항상 file-bridge."""
+    if target == "codex":
+        return "file-bridge"  # Codex는 전용 CLI가 없으므로 항상 파일 브릿지
+    return load_config(bridge).get("gemini", {}).get("mode", "file-bridge")
+
+
+_TOPIC_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def safe_topic(topic: Optional[str]) -> str:
+    """topic을 안전한 파일명 slug로 정규화한다.
+
+    경로 구분자/`..`/Windows 금지 문자/과도한 길이를 차단한다.
+    """
+    t = (topic or "").strip()
+    t = _TOPIC_RE.sub("-", t)          # 허용 외 문자 → 하이픈
+    t = t.strip("-._")                  # 양끝 구두점 제거
+    t = t[:50]                          # 길이 제한
+    return t or "message"
+
+
 # === Commands ===
 
 def cmd_init(args, bridge_dir_override=None):
@@ -311,14 +368,30 @@ def cmd_init(args, bridge_dir_override=None):
     else:
         print(f"  이미 존재: {codex_ctx.relative_to(base)}")
 
+    # bridge-config.json — Gemini 전송 모드 (file-bridge | agy)
+    requested_mode = getattr(args, "mode", None) or "file-bridge"
+    if requested_mode not in VALID_GEMINI_MODES:
+        print(f"⚠️  알 수 없는 모드 '{requested_mode}' → file-bridge로 설정")
+        requested_mode = "file-bridge"
+    config = load_config(bridge)
+    config["gemini"]["mode"] = requested_mode
+    save_config(bridge, config)
+    print(f"  생성: {_config_path(bridge).relative_to(base)} (gemini.mode={requested_mode})")
+
     print(f"✅ Bridge 초기화 완료: {base}")
     print(f"   bridge/from-gemini/       — Gemini 응답 저장소")
     print(f"   bridge/from-codex/        — Codex 응답 저장소")
     print(f"   bridge/from-claude/       — Claude 요청 저장소 (.trigger / .codex-trigger)")
     print(f"   bridge/gemini-context.md  — 프로젝트 컨텍스트 (Gemini용)")
     print(f"   bridge/codex-context.md   — 프로젝트 컨텍스트 (Codex용)")
+    print(f"   bridge/{CONFIG_FILENAME}  — 전송 모드 설정")
     print(f"   .agent/rules/bridge-output.md — Gemini 규칙")
     print(f"   .agent/rules/codex-output.md  — Codex 규칙")
+    print()
+    print(f"📡 Gemini 전송 모드: {requested_mode}")
+    print(f"   • file-bridge — Antigravity IDE 채팅패널 경유 (권장: 할당량 효율·안정적·승인 게이트)")
+    print(f"   • agy         — Antigravity CLI 직접 호출 (실험적: 빠르지만 할당량 소모·비공식 경로 의존)")
+    print(f"   전환: python3 bridge.py --dir <경로> config --gemini-mode <file-bridge|agy>")
 
 
 def cmd_latest(args):
@@ -382,9 +455,49 @@ def cmd_search(args):
 MAX_TRIGGER_LENGTH = 500  # 트리거 메시지 최대 길이 (이 이상이면 파일로 분리)
 
 
+def _send_via_agy(args, bridge, topic, message):
+    """Gemini agy 모드: agy CLI로 직접 실행하고 응답을 from-gemini/에 저장한다."""
+    try:
+        import agy_provider
+    except ImportError:
+        print("❌ agy_provider 모듈을 찾을 수 없습니다. file-bridge 모드를 사용하세요.")
+        raise SystemExit(1)
+
+    sources = get_sources(bridge)
+    response_dir = sources["gemini"]
+    config = load_config(bridge)
+    agy_cfg = config.get("agy", {})
+    workdir = str(bridge.parent)  # 프로젝트 루트에서 실행 (conv-id 매핑 기준)
+
+    print(f"🤖 agy 직접 호출 (mode=agy)... 워크스페이스: {workdir}")
+    try:
+        out = agy_provider.run(
+            message,
+            response_dir,
+            topic=topic,
+            workdir=workdir,
+            model=agy_cfg.get("model"),
+            sandbox=agy_cfg.get("sandbox", True),
+        )
+    except agy_provider.AgyError as e:
+        print(f"❌ agy 실행 실패: {e}")
+        raise SystemExit(1)
+
+    print(f"📨 Gemini(agy) 응답 저장: {out.relative_to(bridge)}\n")
+    print(out.read_text(encoding="utf-8"))
+
+
 def cmd_send(args):
     target = getattr(args, "target", "gemini")
     bridge = resolve_bridge_dir(args.dir)
+    topic = safe_topic(args.topic)
+    message = args.message
+
+    # Gemini + agy 모드 → 파일 트리거 대신 agy CLI 직접 호출
+    if target == "gemini" and get_mode(bridge, "gemini") == "agy":
+        _send_via_agy(args, bridge, topic, message)
+        return
+
     sources = get_sources(bridge)
     from_claude = sources["claude"]
     from_claude.mkdir(parents=True, exist_ok=True)
@@ -393,18 +506,20 @@ def cmd_send(args):
     timestamp = now.strftime("%Y-%m-%dT%H:%M:%S")
     file_ts = now.strftime("%Y-%m-%d_%H-%M")
 
-    topic = args.topic or "message"
-    message = args.message
-
     # Codex용 응답 파일 경로 생성
     response_file = ""
     if target == "codex":
         response_filename = f"{file_ts}_{topic}.md"
         response_file = f"bridge/from-codex/{response_filename}"
 
-    # 긴 메시지는 별도 .md 파일로 저장하고 트리거에는 경로만 포함
     response_dir_name = "from-codex" if target == "codex" else "from-gemini"
-    if len(message) > MAX_TRIGGER_LENGTH:
+
+    # 파일 분리 조건:
+    #   - Codex는 항상 파일 분리 (한글을 익스텐션 인라인 채널에 안 태움 → 인코딩 깨짐 방지)
+    #   - Gemini는 MAX_TRIGGER_LENGTH 초과 시에만
+    split_to_file = (target == "codex") or (len(message) > MAX_TRIGGER_LENGTH)
+
+    if split_to_file:
         detail_filename = f"{file_ts}_{topic}-detail.md"
         detail_path = from_claude / detail_filename
         detail_path.write_text(
@@ -412,12 +527,19 @@ def cmd_send(args):
             encoding="utf-8",
         )
         rel_detail = f"bridge/from-claude/{detail_filename}"
-        trigger_message = (
-            f"아래 파일에 상세 요청이 있습니다. 파일을 읽고 그 안의 요청대로 처리해주세요.\n\n"
-            f"📄 파일 경로: {rel_detail}\n\n"
-            f"응답은 bridge/{response_dir_name}/ 에 저장해주세요."
-        )
-        print(f"📄 긴 메시지 → 파일 분리: {rel_detail} ({len(message)}자)")
+        if target == "codex":
+            # ASCII 전용 포인터 — 한글 본문은 UTF-8 파일(rel_detail)에만 존재
+            trigger_message = (
+                f"Read the request file and follow it exactly: {rel_detail}\n"
+                f"Save your response to bridge/{response_dir_name}/ ."
+            )
+        else:
+            trigger_message = (
+                f"아래 파일에 상세 요청이 있습니다. 파일을 읽고 그 안의 요청대로 처리해주세요.\n\n"
+                f"📄 파일 경로: {rel_detail}\n\n"
+                f"응답은 bridge/{response_dir_name}/ 에 저장해주세요."
+            )
+        print(f"📄 파일 분리: {rel_detail} ({len(message)}자)")
     else:
         trigger_message = message
 
@@ -471,6 +593,12 @@ continue
 def cmd_ask(args):
     target = getattr(args, "target", "gemini")
     bridge = resolve_bridge_dir(args.dir)
+
+    # Gemini + agy 모드는 동기 실행 — cmd_send가 이미 응답을 저장·출력함
+    if target == "gemini" and get_mode(bridge, "gemini") == "agy":
+        cmd_send(args)
+        return
+
     sources = get_sources(bridge)
     response_dir = sources[target]
     before_files = set(response_dir.glob("*.md")) if response_dir.exists() else set()
@@ -574,6 +702,40 @@ def cmd_status(args):
         raise SystemExit(1)
 
 
+def cmd_config(args):
+    """전송 모드를 확인하거나 변경한다."""
+    bridge = resolve_bridge_dir(args.dir)
+    config = load_config(bridge)
+
+    changed = False
+    if args.gemini_mode:
+        if args.gemini_mode not in VALID_GEMINI_MODES:
+            print(f"⚠️  알 수 없는 모드: {args.gemini_mode} (가능: {', '.join(VALID_GEMINI_MODES)})")
+            raise SystemExit(1)
+        config["gemini"]["mode"] = args.gemini_mode
+        changed = True
+    if args.agy_sandbox is not None:
+        config.setdefault("agy", {})["sandbox"] = args.agy_sandbox
+        changed = True
+    if args.agy_model:
+        config.setdefault("agy", {})["model"] = args.agy_model
+        changed = True
+
+    if changed:
+        save_config(bridge, config)
+        print(f"✅ 설정 저장: {_config_path(bridge).relative_to(bridge.parent)}")
+
+    gemini_mode = config.get("gemini", {}).get("mode", "file-bridge")
+    print(f"📡 Gemini 전송 모드: {gemini_mode}")
+    print(f"   Codex 전송 모드: file-bridge (고정 — Codex 전용 CLI 없음)")
+    if gemini_mode == "agy":
+        agy_cfg = config.get("agy", {})
+        print(f"   agy.sandbox={agy_cfg.get('sandbox', True)}  agy.model={agy_cfg.get('model') or '(기본)'}")
+        import agy_provider  # noqa: F401 — 가용성 확인용 지연 임포트
+        found = agy_provider.find_agy()
+        print(f"   agy 실행 파일: {found or '❌ PATH에서 못 찾음 (네이티브 Windows에서 실행 필요)'}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="AI Bridge — Gemini + Codex")
     parser.add_argument(
@@ -595,7 +757,34 @@ def main():
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("init", help="프로젝트에 bridge 구조 초기화")
+    p_init = sub.add_parser("init", help="프로젝트에 bridge 구조 초기화")
+    p_init.add_argument(
+        "--mode",
+        choices=list(VALID_GEMINI_MODES),
+        default="file-bridge",
+        help="Gemini 전송 모드 (기본: file-bridge)",
+    )
+
+    p_config = sub.add_parser("config", help="전송 모드 확인/변경")
+    p_config.add_argument(
+        "--gemini-mode",
+        choices=list(VALID_GEMINI_MODES),
+        default=None,
+        help="Gemini 전송 모드 변경",
+    )
+    p_config.add_argument(
+        "--agy-sandbox",
+        dest="agy_sandbox",
+        type=lambda v: v.lower() in ("1", "true", "yes", "on"),
+        default=None,
+        help="agy 모드 sandbox 사용 여부 (true/false)",
+    )
+    p_config.add_argument(
+        "--agy-model",
+        dest="agy_model",
+        default=None,
+        help="agy 모드에서 사용할 모델명",
+    )
 
     sub.add_parser("latest", help="최신 응답 출력")
 
@@ -622,6 +811,7 @@ def main():
 
     commands = {
         "init": cmd_init,
+        "config": cmd_config,
         "latest": cmd_latest,
         "list": cmd_list,
         "search": cmd_search,

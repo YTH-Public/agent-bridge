@@ -1,6 +1,38 @@
 # Agent Bridge 개선사항
 
+## 의사결정 기록 (ADR)
+
+### ADR-1. agy CLI 전환 vs 파일 브릿지 유지 (2026-06-13)
+- **맥락**: Gemini CLI → Antigravity CLI(`agy`) 전환(2026-06-18 구 CLI 종료). "파일 브릿지를 버리고 agy 직접 호출로 갈아탈까?"
+- **조사 결과**:
+  - `agy -p`는 non-TTY(서브프로세스/파이프/리다이렉트)에서 stdout에 응답을 안 씀 = 문서화된 버그(antigravity-cli Issue #76/#115). 직접 재현됨.
+  - 우회는 비공식 경로 `~/.gemini/antigravity-cli/brain/<conv-id>/.../transcript.jsonl` 읽기뿐 → 업데이트 취약.
+  - 채팅패널과 agy는 같은 구독 할당량 풀 공유. agy는 요청당 토큰 오버헤드가 커 할당량을 더 빨리 소진(개선 중이나 여전).
+  - agy `-p`는 승인 게이트 없이 도구 자동 실행(보안 리스크). 실제로 사소한 질문에도 워크스페이스를 `list_dir`함.
+  - 약관상 본인 구독으로 공식 agy 바이너리를 본인 개발용 구동 + 자기 transcript 읽기는 위반 아님.
+- **결정 (Claude + Codex 독립 합의)**: **파일 브릿지를 핵심으로 유지**하고, **agy는 선택적 provider로 추가**. 안정적 stdout/공식 출력 API·권한 제어·할당량 영향·fallback이 확인되면 그때 Gemini 경로만 단계적 전환.
+- **구현**: `bridge-config.json`의 `gemini.mode`로 `file-bridge`(기본) / `agy`(실험적) 선택. `agy_provider.py`가 transcript 우회 + 실패 시 file-bridge 폴백 안내.
+
 ## 해결됨
+
+### 10. 전송 모드 선택 (file-bridge / agy) + 런타임 자동 선택
+- **해결일**: 2026-06-13
+- **해결**:
+  - `bridge-config.json` 도입, `init --mode` / `config --gemini-mode`로 모드 선택. init이 두 모드를 안내.
+  - `agy_provider.py` 신규 — `agy -p` 호출 후 transcript.jsonl에서 최종 응답 추출(stdout 버그 우회), `--sandbox` 기본 적용.
+  - `run-bridge.ps1` 런처 — WSL 우선, 없으면 네이티브(py→python→uv), agy 모드는 항상 네이티브. → **WSL 없는 Windows 환경 지원**.
+
+### 11. Antigravity IDE 분리 대응 (익스텐션 경로)
+- **해결일**: 2026-06-13
+- **증상**: `Antigravity` → `Antigravity IDE`로 제품이 분리되며 익스텐션 디렉토리가 `.antigravity-ide`(신) / `.antigravity`(구)로 나뉨. deploy.sh가 구 경로에만 배포해 새 IDE가 못 읽음.
+- **해결**: deploy.sh가 신·구 베이스(Windows `.antigravity-ide`/`.antigravity`, WSL `.antigravity-ide-server`/`.antigravity-server`) 중 **존재하는 곳 모두에 배포**.
+
+### 12. Codex 전송 한글 인코딩 깨짐
+- **해결일**: 2026-06-13
+- **증상**: Codex에 한글 지시 전송 시 인코딩이 깨짐. WSL 로케일·인자전달·파일은 모두 UTF-8 정상 → 원인은 익스텐션 인라인 채널(`chatgpt.implementTodo` comment).
+- **해결**: Codex는 **항상 본문을 UTF-8 detail 파일로 분리**하고, 트리거(=익스텐션에 넘기는 값)에는 **ASCII 포인터만** 담는다. 한글이 인라인 채널을 거치지 않음.
+
+
 
 ### 5. WSL Remote 지원 + extensions.json 안정화
 - **해결일**: 2026-03-13

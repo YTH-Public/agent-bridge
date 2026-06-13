@@ -22,9 +22,26 @@ Antigravity IDE의 Gemini와 통신하는 브릿지. Windows Claude Code에서 W
 ## 핵심 규칙
 
 - 모든 명령은 **현재 프로젝트의 bridge/ 디렉토리**를 사용한다.
-- **Windows 경로를 WSL 경로로 변환**하여 전달한다.
-- 스크립트 경로: WSL 내 `~/.claude/skills/agent-bridge/bridge.py`
 - **순수 Python3 stdlib** — uv나 pip 의존성 없음.
+- **실행 런타임은 WSL 우선, 없으면 Windows 네이티브** (아래 "실행 런타임 선택" 참조).
+- **전송 모드는 2가지** (init 시 사용자에게 안내):
+  - `file-bridge` (기본·권장) — Antigravity IDE 채팅패널 경유. 할당량 효율·안정적·승인 게이트 있음.
+  - `agy` (실험적) — Antigravity CLI(`agy`) 직접 호출. 빠르지만 할당량 소모·비공식 transcript 경로 의존. **반드시 Windows 네이티브로 실행**(agy.exe·~/.gemini가 Windows 쪽).
+
+## 실행 런타임 선택 (WSL 우선 → 네이티브 fallback)
+
+런처 `run-bridge.ps1`이 런타임을 자동 선택한다. **권장: 런처를 통해 호출**한다.
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\.claude\skills\agent-bridge\run-bridge.ps1" -- --dir "<Windows경로>" <subcommand> ...
+```
+
+런처의 선택 규칙:
+1. **agy 모드**(bridge-config.json의 gemini.mode=agy) → 항상 Windows 네이티브(py→python→uv)
+2. **WSL 사용 가능** + file-bridge → WSL의 `~/.claude/skills/agent-bridge/bridge.py` (경로 자동 변환)
+3. **WSL 없음** → Windows 네이티브
+
+> WSL이 있는 환경에서 file-bridge를 쓸 때는 아래 "실행 방법 (Windows → WSL)"의 직접 호출 패턴을 그대로 써도 된다. WSL이 없는 환경(또는 agy 모드)에서는 반드시 런처(또는 네이티브 `py bridge.py`)를 사용한다.
 
 ## Windows → WSL 경로 변환 규칙
 
@@ -72,11 +89,11 @@ Claude는 전송 시 아래 형식으로 메시지를 구성한다:
 2. `bridge/gemini-context.md` 읽기
 3. 위 포맷으로 조합하여 전송
 
-### 긴 메시지 자동 파일 분리
+### 긴 메시지 자동 파일 분리 + Codex 인코딩 보호
 
-bridge.py는 메시지가 **500자 초과**이면 자동으로:
-1. 상세 내용을 `bridge/from-claude/{timestamp}_{topic}-detail.md`로 저장
-2. 트리거에는 **파일 경로만** 포함하여 Gemini에게 "이 파일을 읽어라"고 전달
+bridge.py는 아래 경우 본문을 `bridge/from-claude/{timestamp}_{topic}-detail.md`로 분리하고, 트리거에는 **파일 경로만** 넣어 "이 파일을 읽어라"고 전달한다:
+- Gemini: 메시지 **500자 초과** 시
+- **Codex: 항상 분리** — 한글을 익스텐션 인라인 채널(`chatgpt.implementTodo`)에 태우면 인코딩이 깨지므로, 한글 본문은 UTF-8 detail 파일에만 두고 트리거에는 **ASCII 포인터만** 보낸다.
 
 ## 프로젝트 컨텍스트 (gemini-context.md)
 
@@ -91,10 +108,16 @@ bridge.py는 메시지가 **500자 초과**이면 자동으로:
 
 ### init 후속 절차 (Claude가 수행)
 
-1. `MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/agent-bridge/bridge.py --dir <wsl-path> init'` 실행
-2. 프로젝트의 CLAUDE.md 읽기
-3. (있으면) package.json, pyproject.toml 등 읽기
-4. 파악한 정보로 `bridge/gemini-context.md` 내용 채우기 (Write tool)
+1. **전송 모드를 사용자에게 안내·확인**한다 (처음 init 시):
+   - `file-bridge`(기본·권장) vs `agy`(실험적). 사용자가 agy를 원하면 `init --mode agy`.
+   - 안내 문구 예: "Gemini 전송을 ① 채팅패널(file-bridge, 권장) ② Antigravity CLI(agy, 실험적) 중 무엇으로 할까요?"
+2. `init` 실행 (WSL 있을 때):
+   `MSYS_NO_PATHCONV=1 wsl -e bash -c 'python3 ~/.claude/skills/agent-bridge/bridge.py --dir <wsl-path> init --mode <file-bridge|agy>'`
+   (WSL 없으면 런처: `run-bridge.ps1 -- --dir "<win경로>" init --mode <...>`)
+3. 프로젝트의 CLAUDE.md 읽기
+4. (있으면) package.json, pyproject.toml 등 읽기
+5. 파악한 정보로 `bridge/gemini-context.md` 내용 채우기 (Write tool)
+6. 모드 변경은 `config --gemini-mode <file-bridge|agy>` 로 가능.
 
 ## 실행 방법 (Windows → WSL)
 
